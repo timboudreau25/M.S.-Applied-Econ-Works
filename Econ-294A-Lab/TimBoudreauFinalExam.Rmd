@@ -1,0 +1,256 @@
+---
+title: "Final Exam"
+author: "Tim Boudreau"
+date: "March 16 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+```{r package-load, message = FALSE, warning = FALSE}
+library(nycflights13)
+library(RSQLite)
+library(dplyr)
+library(ggplot2)
+library(class)
+```
+
+## Use the NYC Flight data from 2013:
+
+I split the 2013 NYC Flight Data into five data frames, one for each of the relevant categoried - flights, weather, airlines, airports and planes.
+```{r, echo = F, message = FALSE, results = "hide"}
+my.data <- nycflights13_sqlite()
+
+flights <- tbl(my.data, "flights") %>% 
+  collect() %>%
+  mutate(canceled = is.na(arr_time))
+flights$canceled <- flights$canceled + 0
+
+weather <- tbl(my.data, "weather") %>% collect()
+airlines <- tbl(my.data, "airlines") %>% collect()
+airports <- tbl(my.data, "airports") %>% collect()
+planes <- tbl(my.data, "planes") %>% collect()
+
+normalize <- function(x) {
+  num <- x - min(x, na.rm = T)
+  denom <- max(x, na.rm = T) - min(x, na.rm = T)
+  return (num/denom)
+}
+```
+
+I then created data frames for the following: weather data and flight delays and cancelations, airport and flight delays and cancelations, plane characteristics and flight delays and cancelations.
+```{r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+###############
+### Weather ###
+###############
+flights.w <- flights %>%
+  group_by(year, month, day, hour) %>%
+  summarise(
+    delay = mean(dep_delay, na.rm = T),
+    cancel = sum(canceled)
+  )
+
+weather.w <- weather %>%
+  arrange(year, month, day, hour)
+
+data.w <- inner_join(flights.w, weather.w, by = c("year", "month", "day", "hour"))
+
+###############
+### Airport ###
+###############
+
+flights.ap <- flights %>%
+  group_by(year, month, day, hour, dest) %>%
+  summarise(
+    delay = mean(dep_delay, na.rm = T),
+    cancel = sum(canceled)
+  ) 
+
+airports.ap <- airports[,1:2]
+
+data.ap <- inner_join(flights.ap, airports.ap, by = c("dest" = "faa"))
+
+#############
+### Plane ###
+#############
+
+flights.p <- flights %>%
+  group_by(year, month, day, hour, tailnum) %>%
+  summarise(
+    delay = mean(dep_delay, na.rm = T),
+    cancel = sum(canceled)
+  ) 
+
+data.p <- inner_join(flights.p, planes, by = c("tailnum"))
+```
+
+# Data Analysis:
+
+The next section is where I analyze our NYC Flight Data from 2013. Included are figures and statistical significance levels, while regression out put and code is hidden, for cleanliness.
+
+## Delay & Cancelation
+
+First off, we should note that hourly delay has a significant effect, at the 99% confidence level, on the total number of canceled flights per hour.
+``` {r echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+summary(glm(cancel~delay, data = data.w))
+```
+
+## Weather
+
+No variable has a statistically significant effect on normalized hourly canceled flights.
+```{r echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+#### Normalized cancel, probit model ####
+
+summary(glm(normalize(cancel)~temp+dewp+humid+wind_dir+wind_speed+
+              wind_gust+precip+pressure+visib, 
+            family=binomial(link="probit"),data = data.w))
+```
+
+Here, temperature, humidity, pressure and visibility have 99% confident, statistically significant effects on delay time. Wind direction, though, is statistically significant at the 90% level.
+```{r echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+#### Hourly delay ####
+
+summary(glm(delay~temp+humid+wind_dir+wind_speed+precip+
+              pressure+visib, data = data.w))
+
+```
+
+Temperature, pressure and visibility have a significant effect on the amount of canceled hourly flights, at confidence levels of 99%, 95% and 95% respectively. Wind direction is also significant, though only ata 90% confidence level and when we include other non-significant variables.
+```{r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+#### Hourly canceled flights ####
+
+summary(glm(cancel~temp+humid+wind_dir+wind_speed+precip+pressure
+            +visib,data = data.w))
+
+```
+
+As seen in the figure below, a higher temperature leads to more and longer delays. The larger, lighter-colored points are cancelations, which also appear more frequently with higher temperatures.
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.height = 4,fig.cap = "Delay length according to temperature. The color is whether or not the flight was canceled."}
+ggplot(data = data.w, aes(x = temp, y = delay, colour = cancel, size = cancel), main = "Temperature and Delays", xlab = "Temperatures", ylab = "Delay Length (minutes)") + scale_x_log10()  + geom_point( alpha = 1) + scale_size(range = c(1,10))
+```
+
+## Time
+
+Out of the time variables, month, hour and minute are statistically significant at the 99% confidence level. Day isn't statistically significant.
+```{r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+data.t <- flights %>%
+  group_by(year, month, day, hour, minute) %>%
+  summarise(
+    delay = mean(dep_delay, na.rm=T),
+    cancel = sum(canceled)
+  )
+```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+summary(glm(delay~month+day+hour+minute, data = data.t))
+```
+
+The variables that significantly impact number of flights canceled are hour, at the 99% level, and minutes, at the 95% level.
+```{r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+summary(glm(cancel~month+day+hour+minute, data = data.t))
+
+```
+
+This graph shows the length of delays relative to the hour of the day the delay occurs. Between midnight and 5 A.M. EST, there are no short delays and, between 1 A.M. and 5 A.M., there are very few longer delays as well. The amount of short delays begins to decrease around 8 P.M., while the amount of long delays begins to increase around 5 A.M.
+```{r, echo = FALSE,  message = FALSE, warning = FALSE, fig.height = 4, fig.cap = "Delay length by time of day, where midnight is both hour 0 and hour 24."}
+ggplot(data = data.t, aes(x = delay, y = hour, colour = hour), main = "Delay Length by Hour of Day", xlab = "Delay Length (minutes)", ylab = "Hour of Day (Midnight equals 0, 24)") + 
+  scale_x_log10()  + geom_point( alpha = 1) + 
+  scale_size(range = c(1,10))
+```
+## Airport
+
+Only 25 of the airport destinations significantly effect the delay length. 
+```{r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+reg.ap <- summary(glm(delay~dest, data = data.ap))
+
+sig <- 0
+j <- 1
+
+for (i in 2:(nrow(coef(reg.ap)))) {
+  if (coef(reg.ap)[i,4] < .05) {
+    sig[j] <- i
+    j <- j + 1
+  }
+}
+
+all.dest <- sort(unique(data.ap$dest))
+
+all.sig.dest <- all.dest[sig]
+
+sig.dest.rows <- match(all.sig.dest, data.ap$dest)[1:length(all.sig.dest)]
+
+all.sig.names <- data.ap$name[sig.dest.rows]
+
+apdelay <- aggregate(data.ap[,6], list(data.ap$dest), mean, na.rm = T)
+```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+as.character(t(all.sig.names))
+```
+
+While 30 airports significantly affected the cancelation of flights:
+``` {r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+reg.ap <- summary(glm(cancel~dest, data = data.ap))
+
+sig <- 0
+j <- 1
+
+for (i in 2:(nrow(coef(reg.ap)))) {
+  if (coef(reg.ap)[i,4] < .05) {
+    sig[j] <- i
+    j <- j + 1
+  }
+}
+
+all.dest <- sort(unique(data.ap$dest))
+
+all.sig.dest <- all.dest[sig]
+
+sig.dest.rows <- match(all.sig.dest, data.ap$dest)[1:length(all.sig.dest)]
+
+all.sig.names <- data.ap$name[sig.dest.rows]
+```
+
+``` {r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+as.character(t(all.sig.names))
+```
+
+``` {r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+data.sub <- data.ap %>%
+  group_by(dest) %>%
+  summarize(
+    delaymean = mean(delay, na.rm = TRUE)
+  )
+
+data.su <- data.sub[ which(data.sub$dest == all.sig.dest)]
+```
+
+``` {r, echo = FALSE,  message = FALSE, warning = FALSE, fig.height = 4, fig.cap = "A histogram mapping the frequency of mean densities, by airport. The airports are indicated by color, but the legend was much too large (101 airports!) to include."}
+ggplot(data = data.sub, aes(x = delaymean, y = ..density.., color = dest), 
+       main = "Density of Mean Delay Times, Colored by Destination Airport", 
+       xlab = "Delay Mean", ylab = "Density") +
+  geom_histogram() + guides(fill = FALSE)
+```
+
+## Airplane
+
+None of the engine types are significant by themselves, but various models and plane types (also seen as tail numbers) have a significant effect on delay:
+```{r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+summary(glm(delay~type+manufacturer+model, data = data.p))
+```
+
+```{r,echo = FALSE, message = FALSE, warning = FALSE, fig.height = 4, fig.cap = "Number of engines on the airplane mapped against the length of delays (and the amount of delays) per amount of engines. The color indicates the type of plane."}
+ggplot(data = data.p, aes(x = engines, y = delay, colour = type), 
+       main = "Number of Engines and Flight Delay Lengths", 
+       xlab = "Engines", ylab = "Delay") +
+  geom_point( alpha = .2) +
+  scale_size(range = c(4,10)) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 6)))
+```
+
+## Conclusion
+
+There seems to be an optimal, minimize-delay-probability set of conditions in which to fly: lower temperatures, midnight to 5 A.M. and with a fixed-wing single engine plane. Because delay time and cancelation probabilities are highly correlated, follow the guidelines to avoid takeoff delays to tyr to avoid flight cancelation. Fly away!
